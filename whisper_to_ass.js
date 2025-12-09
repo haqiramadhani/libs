@@ -136,31 +136,50 @@ function createStyleLine(styleOptions, videoResolution) {
   return `Style: Default,${fontFamily},${fontSize},${lineColor},${secondaryColor},${outlineColor},${boxColor},${bold},${italic},${underline},${strikeout},${scaleX},${scaleY},${spacing},${angle},${borderStyle},${outlineWidth},${shadowOffset},${alignment},${marginL},${marginR},${marginV},0`;
 }
 
-// CRITICAL FIX: Robust word-to-segment mapping
-function getWordsForSegment(segment, transcriptionResult) {
-  // If segment has words property, use it (OpenAI Whisper format)
-  if (segment.words && Array.isArray(segment.words)) {
-    return segment.words;
+// ============================================
+// CRITICAL: Preprocess transcription data to avoid duplicate words
+// ============================================
+function restructureTranscriptionResult(transcriptionResult) {
+  // If no root-level words array, return as-is
+  if (!transcriptionResult.words || !Array.isArray(transcriptionResult.words)) {
+    return transcriptionResult;
   }
   
-  // If transcriptionResult has root-level words array (Groq format)
-  if (transcriptionResult.words && Array.isArray(transcriptionResult.words)) {
-    // Include words whose time range overlaps with the segment's time range
-    // Be inclusive of words that start or end within the segment bounds
-    return transcriptionResult.words.filter(word => {
-      const wordStart = word.start || 0;
-      const wordEnd = word.end || 0;
-      const segStart = segment.start || 0;
-      const segEnd = segment.end || 0;
-      
-      // Include if: word starts in segment, OR word ends in segment, OR word spans entire segment
-      return (wordStart >= segStart && wordStart < segEnd) || // starts during segment
-             (wordEnd > segStart && wordEnd <= segEnd) || // ends during segment
-             (wordStart <= segStart && wordEnd >= segEnd); // spans entire segment
+  // If segments already have words, return as-is
+  const hasSegmentWords = (transcriptionResult.segments || []).some(s => s.words && s.words.length > 0);
+  if (hasSegmentWords) {
+    return transcriptionResult;
+  }
+  
+  // Create a working copy with empty words arrays for each segment
+  const result = {
+    ...transcriptionResult,
+    segments: (transcriptionResult.segments || []).map(s => ({ ...s, words: [] }))
+  };
+  
+  const words = [...result.words].sort((a, b) => (a.start || 0) - (b.start || 0));
+  const segments = result.segments;
+  
+  // Assign each word to EXACTLY ONE segment based on start time
+  for (const word of words) {
+    const wordStart = word.start || 0;
+    
+    // Find the segment where this word starts
+    const targetSegment = segments.find(seg => {
+      const segStart = seg.start || 0;
+      const segEnd = seg.end || 0;
+      return wordStart >= segStart && wordStart < segEnd;
     });
+    
+    if (targetSegment) {
+      targetSegment.words.push(word);
+    }
   }
   
-  return [];
+  // Remove the root-level words array to prevent double-processing
+  delete result.words;
+  
+  return result;
 }
 
 function handleClassic(transcriptionResult, styleOptions, replaceDict, videoResolution) {
@@ -211,10 +230,9 @@ function handleKaraoke(transcriptionResult, styleOptions, replaceDict, videoReso
   const wordColor = rgbToAssColor(styleOptions.word_color || '#FFFF00');
   const events = [];
   
-  // FIX: Process segments in order, ensuring all words are captured
   for (const segment of transcriptionResult.segments || []) {
-    const words = getWordsForSegment(segment, transcriptionResult);
-    if (!words || !words.length) continue;
+    const words = segment.words || [];
+    if (!words.length) continue;
     
     let dialogueText = '';
     
@@ -266,10 +284,9 @@ function handleHighlight(transcriptionResult, styleOptions, replaceDict, videoRe
   
   const events = [];
   
-  // FIX: Process segments in order, ensuring all words are captured
   for (const segment of transcriptionResult.segments || []) {
-    const words = getWordsForSegment(segment, transcriptionResult);
-    if (!words || !words.length) continue;
+    const words = segment.words || [];
+    if (!words.length) continue;
     
     const processedWords = words.map(w => ({
       text: processText(w.word || '', replaceDict, allCaps, 0),
@@ -332,8 +349,8 @@ function handleUnderline(transcriptionResult, styleOptions, replaceDict, videoRe
   const events = [];
   
   for (const segment of transcriptionResult.segments || []) {
-    const words = getWordsForSegment(segment, transcriptionResult);
-    if (!words || !words.length) continue;
+    const words = segment.words || [];
+    if (!words.length) continue;
     
     const processedWords = words.map(w => ({
       text: processText(w.word || '', replaceDict, allCaps, 0),
@@ -387,8 +404,8 @@ function handleWordByWord(transcriptionResult, styleOptions, replaceDict, videoR
   const events = [];
   
   for (const segment of transcriptionResult.segments || []) {
-    const words = getWordsForSegment(segment, transcriptionResult);
-    if (!words || !words.length) continue;
+    const words = segment.words || [];
+    if (!words.length) continue;
     
     const wordGroups = maxWordsPerLine > 0 
       ? words.reduce((acc, word, idx) => {
@@ -482,17 +499,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   return header + dialogueLines + '\n';
 }
 
-// Fungsi utama untuk n8n
+// ============================================
+// Fungsi utama untuk n8n dengan preprocessing
+// ============================================
 function createAssFromWhisper(videoMetadata, transcriptionResult, captionStyle, replaceList) {
   if (!videoMetadata || !transcriptionResult) {
     throw new Error('Missing required parameters: videoMetadata and transcriptionResult are required');
   }
   
+  // CRITICAL: Restructure data to ensure each word appears in exactly one segment
+  const restructuredResult = restructureTranscriptionResult(transcriptionResult);
+  
   const videoResolution = [videoMetadata.width || 1920, videoMetadata.height || 1080];
   const styleType = (captionStyle && captionStyle.style || 'classic').toLowerCase();
   
   return generateAssContent(
-    transcriptionResult,
+    restructuredResult,
     styleType,
     captionStyle || {},
     replaceList || [],
