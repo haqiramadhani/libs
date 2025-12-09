@@ -64,7 +64,7 @@ function determineAlignmentCode(position, alignment, x, y, videoWidth, videoHeig
     return { anCode, usePos: true, finalX: x, finalY: y };
   }
   
-  const positionLower = (position || 'middle_center').toLowerCase();
+  const positionLower = (position || 'bottom_center').toLowerCase();
   
   let verticalBase, verticalCenter;
   if (positionLower.includes('top')) {
@@ -136,7 +136,7 @@ function createStyleLine(styleOptions, videoResolution) {
   return `Style: Default,${fontFamily},${fontSize},${lineColor},${secondaryColor},${outlineColor},${boxColor},${bold},${italic},${underline},${strikeout},${scaleX},${scaleY},${spacing},${angle},${borderStyle},${outlineWidth},${shadowOffset},${alignment},${marginL},${marginR},${marginV},0`;
 }
 
-// CRITICAL FIX: Helper to get words for each segment
+// CRITICAL FIX: Robust word-to-segment mapping
 function getWordsForSegment(segment, transcriptionResult) {
   // If segment has words property, use it (OpenAI Whisper format)
   if (segment.words && Array.isArray(segment.words)) {
@@ -145,9 +145,19 @@ function getWordsForSegment(segment, transcriptionResult) {
   
   // If transcriptionResult has root-level words array (Groq format)
   if (transcriptionResult.words && Array.isArray(transcriptionResult.words)) {
-    return transcriptionResult.words.filter(
-      word => word.start >= segment.start && word.end <= segment.end
-    );
+    // Include words whose time range overlaps with the segment's time range
+    // Be inclusive of words that start or end within the segment bounds
+    return transcriptionResult.words.filter(word => {
+      const wordStart = word.start || 0;
+      const wordEnd = word.end || 0;
+      const segStart = segment.start || 0;
+      const segEnd = segment.end || 0;
+      
+      // Include if: word starts in segment, OR word ends in segment, OR word spans entire segment
+      return (wordStart >= segStart && wordStart < segEnd) || // starts during segment
+             (wordEnd > segStart && wordEnd <= segEnd) || // ends during segment
+             (wordStart <= segStart && wordEnd >= segEnd); // spans entire segment
+    });
   }
   
   return [];
@@ -157,7 +167,7 @@ function handleClassic(transcriptionResult, styleOptions, replaceDict, videoReso
   const maxWordsPerLine = styleOptions.max_words_per_line || 0;
   const allCaps = styleOptions.all_caps || false;
   
-  const position = styleOptions.position || 'middle_center';
+  const position = styleOptions.position || 'bottom_center';
   const alignment = styleOptions.alignment || 'center';
   const x = styleOptions.x;
   const y = styleOptions.y;
@@ -189,7 +199,7 @@ function handleKaraoke(transcriptionResult, styleOptions, replaceDict, videoReso
   const maxWordsPerLine = styleOptions.max_words_per_line || 0;
   const allCaps = styleOptions.all_caps || false;
   
-  const position = styleOptions.position || 'middle_center';
+  const position = styleOptions.position || 'bottom_center';
   const alignment = styleOptions.alignment || 'center';
   const x = styleOptions.x;
   const y = styleOptions.y;
@@ -201,8 +211,8 @@ function handleKaraoke(transcriptionResult, styleOptions, replaceDict, videoReso
   const wordColor = rgbToAssColor(styleOptions.word_color || '#FFFF00');
   const events = [];
   
+  // FIX: Process segments in order, ensuring all words are captured
   for (const segment of transcriptionResult.segments || []) {
-    // FIX: Use helper to get words from either segment.words or root-level words
     const words = getWordsForSegment(segment, transcriptionResult);
     if (!words || !words.length) continue;
     
@@ -242,7 +252,7 @@ function handleHighlight(transcriptionResult, styleOptions, replaceDict, videoRe
   const maxWordsPerLine = styleOptions.max_words_per_line || 0;
   const allCaps = styleOptions.all_caps || false;
   
-  const position = styleOptions.position || 'middle_center';
+  const position = styleOptions.position || 'bottom_center';
   const alignment = styleOptions.alignment || 'center';
   const x = styleOptions.x;
   const y = styleOptions.y;
@@ -256,6 +266,7 @@ function handleHighlight(transcriptionResult, styleOptions, replaceDict, videoRe
   
   const events = [];
   
+  // FIX: Process segments in order, ensuring all words are captured
   for (const segment of transcriptionResult.segments || []) {
     const words = getWordsForSegment(segment, transcriptionResult);
     if (!words || !words.length) continue;
@@ -308,7 +319,7 @@ function handleUnderline(transcriptionResult, styleOptions, replaceDict, videoRe
   const maxWordsPerLine = styleOptions.max_words_per_line || 0;
   const allCaps = styleOptions.all_caps || false;
   
-  const position = styleOptions.position || 'middle_center';
+  const position = styleOptions.position || 'bottom_center';
   const alignment = styleOptions.alignment || 'center';
   const x = styleOptions.x;
   const y = styleOptions.y;
@@ -363,7 +374,7 @@ function handleWordByWord(transcriptionResult, styleOptions, replaceDict, videoR
   const maxWordsPerLine = styleOptions.max_words_per_line || 0;
   const allCaps = styleOptions.all_caps || false;
   
-  const position = styleOptions.position || 'middle_center';
+  const position = styleOptions.position || 'bottom_center';
   const alignment = styleOptions.alignment || 'center';
   const x = styleOptions.x;
   const y = styleOptions.y;
@@ -473,7 +484,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 // Fungsi utama untuk n8n
 function createAssFromWhisper(videoMetadata, transcriptionResult, captionStyle, replaceList) {
-  // Ensure we have valid data
   if (!videoMetadata || !transcriptionResult) {
     throw new Error('Missing required parameters: videoMetadata and transcriptionResult are required');
   }
