@@ -20,11 +20,13 @@ function formatAssTime(seconds) {
 }
 
 function processText(text, replaceDict, allCaps, maxWordsPerLine) {
-  let processed = text;
+  let processed = text || '';
   
   for (const [oldWord, newWord] of Object.entries(replaceDict)) {
-    const regex = new RegExp(oldWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    processed = processed.replace(regex, newWord);
+    if (oldWord && newWord) {
+      const regex = new RegExp(oldWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      processed = processed.replace(regex, newWord);
+    }
   }
   
   if (allCaps) {
@@ -32,7 +34,7 @@ function processText(text, replaceDict, allCaps, maxWordsPerLine) {
   }
   
   if (maxWordsPerLine > 0) {
-    const words = processed.split(/\s+/);
+    const words = processed.split(/\s+/).filter(w => w);
     const lines = [];
     for (let i = 0; i < words.length; i += maxWordsPerLine) {
       lines.push(words.slice(i, i + maxWordsPerLine).join(' '));
@@ -44,13 +46,13 @@ function processText(text, replaceDict, allCaps, maxWordsPerLine) {
 }
 
 function splitLines(text, maxWordsPerLine) {
-  if (maxWordsPerLine <= 0) return [text];
-  const words = text.trim().split(/\s+/);
+  if (maxWordsPerLine <= 0) return [text || ''];
+  const words = (text || '').trim().split(/\s+/).filter(w => w);
   const lines = [];
   for (let i = 0; i < words.length; i += maxWordsPerLine) {
     lines.push(words.slice(i, i + maxWordsPerLine).join(' '));
   }
-  return lines;
+  return lines.length ? lines : [''];
 }
 
 function determineAlignmentCode(position, alignment, x, y, videoWidth, videoHeight) {
@@ -62,31 +64,33 @@ function determineAlignmentCode(position, alignment, x, y, videoWidth, videoHeig
     return { anCode, usePos: true, finalX: x, finalY: y };
   }
   
+  const positionLower = (position || 'middle_center').toLowerCase();
+  
   let verticalBase, verticalCenter;
-  if (position.includes('top')) {
+  if (positionLower.includes('top')) {
     verticalBase = 7;
-    verticalCenter = videoHeight / 6;
-  } else if (position.includes('middle')) {
+    verticalCenter = Math.round(videoHeight / 6);
+  } else if (positionLower.includes('middle')) {
     verticalBase = 4;
-    verticalCenter = videoHeight / 2;
+    verticalCenter = Math.round(videoHeight / 2);
   } else {
     verticalBase = 1;
-    verticalCenter = (5 * videoHeight) / 6;
+    verticalCenter = Math.round((5 * videoHeight) / 6);
   }
   
   let leftBoundary, rightBoundary, centerLine;
-  if (position.includes('left')) {
+  if (positionLower.includes('left')) {
     leftBoundary = 0;
-    rightBoundary = videoWidth / 3;
-    centerLine = videoWidth / 6;
-  } else if (position.includes('right')) {
-    leftBoundary = (2 * videoWidth) / 3;
+    rightBoundary = Math.round(videoWidth / 3);
+    centerLine = Math.round(videoWidth / 6);
+  } else if (positionLower.includes('right')) {
+    leftBoundary = Math.round((2 * videoWidth) / 3);
     rightBoundary = videoWidth;
-    centerLine = (5 * videoWidth) / 6;
+    centerLine = Math.round((5 * videoWidth) / 6);
   } else {
-    leftBoundary = videoWidth / 3;
-    rightBoundary = (2 * videoWidth) / 3;
-    centerLine = videoWidth / 2;
+    leftBoundary = Math.round(videoWidth / 3);
+    rightBoundary = Math.round((2 * videoWidth) / 3);
+    centerLine = Math.round(videoWidth / 2);
   }
   
   let finalX;
@@ -98,11 +102,10 @@ function determineAlignmentCode(position, alignment, x, y, videoWidth, videoHeig
     finalX = centerLine;
   }
   
-  const finalY = verticalCenter;
   const horizCode = horizontalMap[alignment] || 2;
   const anCode = verticalBase + (horizCode - 1);
   
-  return { anCode, usePos: true, finalX: Math.round(finalX), finalY: Math.round(finalY) };
+  return { anCode, usePos: true, finalX, finalY: verticalCenter };
 }
 
 function createStyleLine(styleOptions, videoResolution) {
@@ -125,13 +128,29 @@ function createStyleLine(styleOptions, videoResolution) {
   const borderStyle = styleOptions.border_style || '1';
   const outlineWidth = styleOptions.outline_width || '2';
   const shadowOffset = styleOptions.shadow_offset || '0';
-  
   const marginL = styleOptions.margin_l || '20';
   const marginR = styleOptions.margin_r || '20';
   const marginV = styleOptions.margin_v || '20';
-  const alignment = styleOptions.alignment_code || '5';
+  const alignment = '5';
   
   return `Style: Default,${fontFamily},${fontSize},${lineColor},${secondaryColor},${outlineColor},${boxColor},${bold},${italic},${underline},${strikeout},${scaleX},${scaleY},${spacing},${angle},${borderStyle},${outlineWidth},${shadowOffset},${alignment},${marginL},${marginR},${marginV},0`;
+}
+
+// CRITICAL FIX: Helper to get words for each segment
+function getWordsForSegment(segment, transcriptionResult) {
+  // If segment has words property, use it (OpenAI Whisper format)
+  if (segment.words && Array.isArray(segment.words)) {
+    return segment.words;
+  }
+  
+  // If transcriptionResult has root-level words array (Groq format)
+  if (transcriptionResult.words && Array.isArray(transcriptionResult.words)) {
+    return transcriptionResult.words.filter(
+      word => word.start >= segment.start && word.end <= segment.end
+    );
+  }
+  
+  return [];
 }
 
 function handleClassic(transcriptionResult, styleOptions, replaceDict, videoResolution) {
@@ -149,13 +168,15 @@ function handleClassic(transcriptionResult, styleOptions, replaceDict, videoReso
   
   const events = [];
   
-  for (const segment of transcriptionResult.segments) {
-    const text = segment.text.trim().replace(/\n/g, ' ');
+  for (const segment of transcriptionResult.segments || []) {
+    const text = (segment.text || '').trim().replace(/\n/g, ' ');
+    if (!text) continue;
+    
     const lines = splitLines(text, maxWordsPerLine);
     const processedText = lines.map(line => processText(line, replaceDict, allCaps, 0)).join('\\N');
     
-    const startTime = formatAssTime(segment.start);
-    const endTime = formatAssTime(segment.end);
+    const startTime = formatAssTime(segment.start || 0);
+    const endTime = formatAssTime(segment.end || 0);
     const positionTag = `{\\an${anCode}\\pos(${finalX},${finalY})}`;
     
     events.push(`Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${positionTag}${processedText}`);
@@ -180,9 +201,10 @@ function handleKaraoke(transcriptionResult, styleOptions, replaceDict, videoReso
   const wordColor = rgbToAssColor(styleOptions.word_color || '#FFFF00');
   const events = [];
   
-  for (const segment of transcriptionResult.segments) {
-    const words = segment.words || [];
-    if (!words.length) continue;
+  for (const segment of transcriptionResult.segments || []) {
+    // FIX: Use helper to get words from either segment.words or root-level words
+    const words = getWordsForSegment(segment, transcriptionResult);
+    if (!words || !words.length) continue;
     
     let dialogueText = '';
     
@@ -191,8 +213,8 @@ function handleKaraoke(transcriptionResult, styleOptions, replaceDict, videoReso
       for (let i = 0; i < words.length; i += maxWordsPerLine) {
         const lineWords = words.slice(i, i + maxWordsPerLine);
         const lineContent = lineWords.map(w => {
-          const durationCs = Math.round((w.end - w.start) * 100);
-          const wordText = processText(w.word, replaceDict, allCaps, 0);
+          const durationCs = Math.round(((w.end || 0) - (w.start || 0)) * 100);
+          const wordText = processText(w.word || '', replaceDict, allCaps, 0);
           return `{\\k${durationCs}}${wordText} `;
         }).join('').trim();
         lines.push(lineContent);
@@ -200,14 +222,14 @@ function handleKaraoke(transcriptionResult, styleOptions, replaceDict, videoReso
       dialogueText = lines.join('\\N');
     } else {
       dialogueText = words.map(w => {
-        const durationCs = Math.round((w.end - w.start) * 100);
-        const wordText = processText(w.word, replaceDict, allCaps, 0);
+        const durationCs = Math.round(((w.end || 0) - (w.start || 0)) * 100);
+        const wordText = processText(w.word || '', replaceDict, allCaps, 0);
         return `{\\k${durationCs}}${wordText} `;
       }).join('').trim();
     }
     
-    const startTime = formatAssTime(words[0].start);
-    const endTime = formatAssTime(words[words.length - 1].end);
+    const startTime = formatAssTime(words[0].start || 0);
+    const endTime = formatAssTime(words[words.length - 1].end || 0);
     const positionTag = `{\\an${anCode}\\pos(${finalX},${finalY})}`;
     
     events.push(`Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${positionTag}{\\c${wordColor}}${dialogueText}`);
@@ -234,14 +256,14 @@ function handleHighlight(transcriptionResult, styleOptions, replaceDict, videoRe
   
   const events = [];
   
-  for (const segment of transcriptionResult.segments) {
-    const words = segment.words || [];
-    if (!words.length) continue;
+  for (const segment of transcriptionResult.segments || []) {
+    const words = getWordsForSegment(segment, transcriptionResult);
+    if (!words || !words.length) continue;
     
     const processedWords = words.map(w => ({
-      text: processText(w.word, replaceDict, allCaps, 0),
-      start: w.start,
-      end: w.end
+      text: processText(w.word || '', replaceDict, allCaps, 0),
+      start: w.start || 0,
+      end: w.end || 0
     })).filter(w => w.text);
     
     if (!processedWords.length) continue;
@@ -298,14 +320,14 @@ function handleUnderline(transcriptionResult, styleOptions, replaceDict, videoRe
   const lineColor = rgbToAssColor(styleOptions.line_color || '#FFFFFF');
   const events = [];
   
-  for (const segment of transcriptionResult.segments) {
-    const words = segment.words || [];
-    if (!words.length) continue;
+  for (const segment of transcriptionResult.segments || []) {
+    const words = getWordsForSegment(segment, transcriptionResult);
+    if (!words || !words.length) continue;
     
     const processedWords = words.map(w => ({
-      text: processText(w.word, replaceDict, allCaps, 0),
-      start: w.start,
-      end: w.end
+      text: processText(w.word || '', replaceDict, allCaps, 0),
+      start: w.start || 0,
+      end: w.end || 0
     })).filter(w => w.text);
     
     if (!processedWords.length) continue;
@@ -353,9 +375,9 @@ function handleWordByWord(transcriptionResult, styleOptions, replaceDict, videoR
   const wordColor = rgbToAssColor(styleOptions.word_color || '#FFFF00');
   const events = [];
   
-  for (const segment of transcriptionResult.segments) {
-    const words = segment.words || [];
-    if (!words.length) continue;
+  for (const segment of transcriptionResult.segments || []) {
+    const words = getWordsForSegment(segment, transcriptionResult);
+    if (!words || !words.length) continue;
     
     const wordGroups = maxWordsPerLine > 0 
       ? words.reduce((acc, word, idx) => {
@@ -368,11 +390,11 @@ function handleWordByWord(transcriptionResult, styleOptions, replaceDict, videoR
     
     for (const wordGroup of wordGroups) {
       for (const wInfo of wordGroup) {
-        const word = processText(wInfo.word, replaceDict, allCaps, 0);
+        const word = processText(wInfo.word || '', replaceDict, allCaps, 0);
         if (!word) continue;
         
-        const startTime = formatAssTime(wInfo.start);
-        const endTime = formatAssTime(wInfo.end);
+        const startTime = formatAssTime(wInfo.start || 0);
+        const endTime = formatAssTime(wInfo.end || 0);
         const positionTag = `{\\an${anCode}\\pos(${finalX},${finalY})}`;
         
         events.push(`Dialogue: 0,${startTime},${endTime},Default,,0,0,0,,${positionTag}{\\c${wordColor}}${word}`);
@@ -410,7 +432,7 @@ function generateAssContent(transcriptionResult, styleType, settings, replaceLis
     border_style: 1,
     x: null,
     y: null,
-    position: 'middle_center',
+    position: 'bottom_center',
     alignment: 'center'
   };
   
@@ -437,7 +459,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const replaceDict = {};
   if (Array.isArray(replaceList)) {
     for (const item of replaceList) {
-      if (item.find && item.replace) {
+      if (item && item.find && item.replace) {
         replaceDict[item.find] = item.replace;
       }
     }
@@ -451,25 +473,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 // Fungsi utama untuk n8n
 function createAssFromWhisper(videoMetadata, transcriptionResult, captionStyle, replaceList) {
-  const videoResolution = [videoMetadata.width, videoMetadata.height];
-  const styleType = (captionStyle.style || 'classic').toLowerCase();
+  // Ensure we have valid data
+  if (!videoMetadata || !transcriptionResult) {
+    throw new Error('Missing required parameters: videoMetadata and transcriptionResult are required');
+  }
+  
+  const videoResolution = [videoMetadata.width || 1920, videoMetadata.height || 1080];
+  const styleType = (captionStyle && captionStyle.style || 'classic').toLowerCase();
   
   return generateAssContent(
     transcriptionResult,
     styleType,
-    captionStyle,
+    captionStyle || {},
     replaceList || [],
     videoResolution
   );
 }
-
-// Contoh penggunaan dalam n8n Code Node:
-// const assContent = createAssFromWhisper(
-//   $input.first().json.videoMetadata,
-//   $input.first().json.transcriptionResult,
-//   $input.first().json.captionStyle,
-//   $input.first().json.replaceList
-// );
-// return [{ json: { assContent } }];
 
 module.exports = { createAssFromWhisper };
